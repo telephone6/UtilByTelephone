@@ -1,0 +1,115 @@
+基于dom4j实现定制开发
+
+在公司碰到一个需求，需要获取XML当中的元素值/属性值，然后获取出来，插入到数据库。
+比如：
+<!-- comments -->
+<request>
+  <Id>1</Id>
+  <name>telephone</name>
+  <AGE>25</AGE>
+  <from_city province="福建" country="中国" aka="有福之州">福州</from_city>
+</request>
+
+差不多这样的一段xml，然后我需要取出里面的Id，name，AGE 插入到一张student表，
+还要取出city的province，country，aka，还有对应的元素值(也就是上面的"福州")插入到city表
+
+这就是我要实现的业务逻辑，从一段xml解析出多条数据库插入语句。
+
+这xml看的我相当难受。xml里面的元素名字大小写、下划线都有，觉得这设计简直不像是人啊。这命名一点都不符合驼峰命名法规范。
+
+如果直接通过原生的xml开源架包，dom4j/xstream等，可能不好直接支持这种复合的取值逻辑。
+可以利用开源的解析程序进行二次封装，以实现自己的所需需求。
+也就是只要实现把xml解析成对象，就可以通过jpa实现入库。
+
+开工开工，不管多难都要迎难而上。
+
+1.首先，分析取值规则。
+要实现元素名的多样化支持，我的第一想法是定一个自定义注解。这个注解用来指定元素名或者属性名绑定。
+那么，就要三个属性（是否元素，是否属性，值），如果是元素的时候，值=元素值，如果是属性的时候，值=属性值。
+@Target({ElementType.TYPE, ElementType.METHOD,ElementType.FIELD})
+@Retention(RetentionPolicy.RUNTIME)
+@Documented
+public @interface XMLEleAno {
+	boolean isElement() default false;
+	boolean isAttribute() default false;
+	String value() default "";
+}
+
+开始编写真正的xml解析程序
+2.定义我认为的简单类型（这些是我眼里的简单类型，因为这些都是单一的数据，不需要用复杂的对象进行封装）：
+    private static final String BYTE_TYPE_NAME = "java.lang.Byte";
+    private static final String SHORT_TYPE_NAME = "java.lang.Short";
+    private static final String INTEGER_TYPE_NAME = "java.lang.Integer";
+    private static final String LONG_TYPE_NAME = "java.lang.Long";
+    private static final String STRING_TYPE_NAME = "java.lang.String";
+    private static final String BOOLEAN_TYPE_NAME = "java.lang.Boolean";
+    private static final String FLOAT_TYPE_NAME = "java.lang.Float";
+    private static final String DOUBLE_TYPE_NAME = "java.lang.Double";
+    private static final String BIG_DECIMAL_TYPE_NAME = "java.math.BigDecimal";
+
+  定义简单类型的目的是为了xml读取出来的数据做转换，比如<Id>123</Id>:
+  有的公司业务想解析成字符串，有的公司想解析成整形，有的要长整型，有的要浮点型...
+  所以，尽可能满足这些多样的转换。
+  
+  private static List<String> basicTypeList = new ArrayList<>();
+  static {
+        basicTypeList.add(BYTE_TYPE_NAME);
+        basicTypeList.add(SHORT_TYPE_NAME);
+        basicTypeList.add(INTEGER_TYPE_NAME);
+        basicTypeList.add(LONG_TYPE_NAME);
+        basicTypeList.add(STRING_TYPE_NAME);
+        basicTypeList.add(BOOLEAN_TYPE_NAME);
+        basicTypeList.add(FLOAT_TYPE_NAME);
+        basicTypeList.add(DOUBLE_TYPE_NAME);
+        basicTypeList.add(BIG_DECIMAL_TYPE_NAME);
+    }
+    
+    定一个数组，放到数组给我们后期做判断。（也可以是map或者其他的任何存放介质）
+
+3.写一个判断简单类型的方法（我传个全类名给你，你告诉我是不是简单的类型，比如我传一个"java.lang.String"，返回个true或者false）
+  private static boolean isBasicType(String typeName) {
+        if (basicTypeList.contains(typeName)) {
+            return true;
+        } else {
+            return false;
+        }
+    }
+    
+    基于上面定义的简单类型数组，我们就可以通过判断数组是否包含这个简单类型的全类名，来判断是不是简单类型
+
+4.根据值转换成简单类型的逻辑
+  private static Object transferValueWithBasicType(String allTypeName, String valueStr) {
+        try {
+            Object obj = null;
+            String[] typeArr = allTypeName.split("\\.");
+            if (BIG_DECIMAL_TYPE_NAME.equals(allTypeName)) {
+                return new BigDecimal(valueStr);
+            } else {
+                String typeName = typeArr[typeArr.length - 1];
+                switch (typeName) {
+                    case "String":
+                        return valueStr;
+                    case "Integer":
+                        typeName = "Int";
+                        break;
+                    default:
+                        break;
+                }
+                Method method = Class.forName(allTypeName).getMethod("parse" + typeName, String.class);
+                obj = method.invoke(Class.forName(allTypeName), valueStr);
+            }
+            return obj;
+        } catch (Exception e) {
+            e.printStackTrace();
+            return null;
+        }
+    }
+    
+    入参两个，一个是简单类型的全类名，一个是字符串，我要做的就是把字符串转换成对应简单类型的值返回，返回的对象是java万物之父-Object类型。
+    这里就要特殊处理一下，如果是BigDecimal类型，那我就直接通过BigDecimal的构造方法返回。
+    如果是String类型，我直接返回String类型即可。
+    其他类型都会提供一个parseLong,parseFloat,parseBoolean类似的方法。
+    除了Integer这个特殊，它竟然是叫parseInt，原因应该是Integer拆箱之后是int，所以才这么叫吧。
+    
+    这一步的目的就是，自己定义的简单类型，自己要实现一套值转换规则。
+ 5.
